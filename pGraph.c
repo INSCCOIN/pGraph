@@ -298,45 +298,122 @@ static int eval_xy(const char *s, double x, double y, double *out)
 }
 
 /* ---- plot ---- */
-#define GN 22
+#define GN 20
 static char formula[96] = "sin(sqrt(x*x+y*y))";
-static double yaw = 0.7, pitch = 0.45, zoom = 70;
+static double yaw = 0.85, pitch = 0.55, zoom = 78;
 static double zbuf[GN][GN];
 static int zok[GN][GN];
-static double xmin = -3.2, xmax = 3.2, ymin = -3.2, ymax = 3.2;
+static double xmin = -3.0, xmax = 3.0, ymin = -3.0, ymax = 3.0;
+static double zmid, zspan = 1;
+
+typedef struct {
+    int x0, y0, x1, y1;
+    double depth;
+    uint16_t col;
+} Edge;
+
+static Edge edges[GN * GN * 2];
+static int nedge;
 
 static uint16_t COL_BG, COL_GRID, COL_LINE, COL_AXIS, COL_TXT, COL_DIM, COL_HI;
 
-static void project(double x, double y, double z, int *sx, int *sy)
+static int project(double x, double y, double z, int *sx, int *sy, double *depth)
 {
-    double cy = cos(yaw), syw = sin(yaw);
-    double cp = cos(pitch), sp = sin(pitch);
-    double x1 = x * cy - y * syw;
-    double y1 = x * syw + y * cy;
-    double y2 = y1 * cp - z * sp;
-    double z2 = y1 * sp + z * cp;
-    double f = zoom / (4.2 + z2);
-    *sx = (int)(W * 0.52 + x1 * f);
-    *sy = (int)(H * 0.42 - y2 * f);
+    double zn, cy, syw, cp, sp, x1, y1, y2, z2, f;
+    zn = (z - zmid) / zspan;
+    if (zn > 1.8)
+        zn = 1.8;
+    if (zn < -1.8)
+        zn = -1.8;
+    cy = cos(yaw);
+    syw = sin(yaw);
+    cp = cos(pitch);
+    sp = sin(pitch);
+    x1 = x * cy - y * syw;
+    y1 = x * syw + y * cy;
+    y2 = y1 * cp - zn * sp;
+    z2 = y1 * sp + zn * cp;
+    if (z2 < -2.2)
+        return 0;
+    f = 3.6 + z2;
+    if (f < 0.55)
+        return 0;
+    f = zoom / f;
+    *sx = (int)(W * 0.50 + x1 * f);
+    *sy = (int)(H * 0.40 - y2 * f);
+    if (*sx < -80 || *sx > (int)W + 80 || *sy < -80 || *sy > (int)H + 80)
+        return 0;
+    if (depth)
+        *depth = z2;
+    return 1;
 }
 
 static void rebuild(void)
 {
-    int i, j;
+    int i, j, n = 0;
+    double zmin = 0, zmax = 0;
     for (j = 0; j < GN; j++) {
         for (i = 0; i < GN; i++) {
             double x = xmin + (xmax - xmin) * i / (GN - 1);
             double y = ymin + (ymax - ymin) * j / (GN - 1);
             double z;
-            if (eval_xy(formula, x, y, &z) || !isfinite(z)) {
+            if (eval_xy(formula, x, y, &z) || !isfinite(z) || fabs(z) > 1e6) {
                 zok[j][i] = 0;
                 zbuf[j][i] = 0;
             } else {
                 zok[j][i] = 1;
                 zbuf[j][i] = z;
+                if (!n || z < zmin)
+                    zmin = z;
+                if (!n || z > zmax)
+                    zmax = z;
+                n++;
             }
         }
     }
+    zmid = n ? (zmin + zmax) * 0.5 : 0;
+    zspan = n ? (zmax - zmin) * 0.5 : 1;
+    if (zspan < 0.35)
+        zspan = 0.35;
+}
+
+static int cmp_edge(const void *a, const void *b)
+{
+    const Edge *x = a, *y = b;
+    if (x->depth < y->depth)
+        return -1;
+    if (x->depth > y->depth)
+        return 1;
+    return 0;
+}
+
+static void add_edge(int i0, int j0, int i1, int j1, uint16_t col)
+{
+    double x0, y0, x1, y1, d0, d1;
+    int sx0, sy0, sx1, sy1;
+    if (!zok[j0][i0] || !zok[j1][i1])
+        return;
+    if (fabs(zbuf[j0][i0] - zbuf[j1][i1]) > zspan * 1.6)
+        return;
+    x0 = xmin + (xmax - xmin) * i0 / (GN - 1);
+    y0 = ymin + (ymax - ymin) * j0 / (GN - 1);
+    x1 = xmin + (xmax - xmin) * i1 / (GN - 1);
+    y1 = ymin + (ymax - ymin) * j1 / (GN - 1);
+    if (!project(x0, y0, zbuf[j0][i0], &sx0, &sy0, &d0))
+        return;
+    if (!project(x1, y1, zbuf[j1][i1], &sx1, &sy1, &d1))
+        return;
+    if ((sx0 - sx1) * (sx0 - sx1) + (sy0 - sy1) * (sy0 - sy1) > (int)(W * W))
+        return;
+    if (nedge >= (int)(sizeof edges / sizeof edges[0]))
+        return;
+    edges[nedge].x0 = sx0;
+    edges[nedge].y0 = sy0;
+    edges[nedge].x1 = sx1;
+    edges[nedge].y1 = sy1;
+    edges[nedge].depth = (d0 + d1) * 0.5;
+    edges[nedge].col = col;
+    nedge++;
 }
 
 static void draw_gui(const char *status)
@@ -353,50 +430,32 @@ static void draw_gui(const char *status)
     text(2, (int)H - 10, status, COL_TXT);
 }
 
+static void axis(double ax0, double ay0, double az0, double ax1, double ay1, double az1)
+{
+    int x0, y0, x1, y1;
+    if (project(ax0, ay0, az0 * zspan + zmid, &x0, &y0, NULL) &&
+        project(ax1, ay1, az1 * zspan + zmid, &x1, &y1, NULL))
+        line(x0, y0, x1, y1, COL_AXIS);
+}
+
 static void render(const char *status)
 {
-    int i, j, x0, y0, x1, y1;
+    int i, j;
     clear(COL_BG);
+    axis(-3.2, 0, 0, 3.2, 0, 0);
+    axis(0, -3.2, 0, 0, 3.2, 0);
+    axis(0, 0, -1.1, 0, 0, 1.1);
 
-    /* axes */
-    project(-3.5, 0, 0, &x0, &y0);
-    project(3.5, 0, 0, &x1, &y1);
-    line(x0, y0, x1, y1, COL_AXIS);
-    project(0, -3.5, 0, &x0, &y0);
-    project(0, 3.5, 0, &x1, &y1);
-    line(x0, y0, x1, y1, COL_AXIS);
-    project(0, 0, -2, &x0, &y0);
-    project(0, 0, 2, &x1, &y1);
-    line(x0, y0, x1, y1, COL_AXIS);
-
-    for (j = 0; j < GN; j++) {
-        for (i = 0; i < GN - 1; i++) {
-            if (!zok[j][i] || !zok[j][i + 1])
-                continue;
-            {
-                double x = xmin + (xmax - xmin) * i / (GN - 1);
-                double y = ymin + (ymax - ymin) * j / (GN - 1);
-                double x2 = xmin + (xmax - xmin) * (i + 1) / (GN - 1);
-                project(x, y, zbuf[j][i], &x0, &y0);
-                project(x2, y, zbuf[j][i + 1], &x1, &y1);
-                line(x0, y0, x1, y1, COL_LINE);
-            }
-        }
-    }
-    for (j = 0; j < GN - 1; j++) {
-        for (i = 0; i < GN; i++) {
-            if (!zok[j][i] || !zok[j + 1][i])
-                continue;
-            {
-                double x = xmin + (xmax - xmin) * i / (GN - 1);
-                double y = ymin + (ymax - ymin) * j / (GN - 1);
-                double y2 = ymin + (ymax - ymin) * (j + 1) / (GN - 1);
-                project(x, y, zbuf[j][i], &x0, &y0);
-                project(x, y2, zbuf[j + 1][i], &x1, &y1);
-                line(x0, y0, x1, y1, COL_GRID);
-            }
-        }
-    }
+    nedge = 0;
+    for (j = 0; j < GN; j++)
+        for (i = 0; i < GN - 1; i++)
+            add_edge(i, j, i + 1, j, COL_LINE);
+    for (j = 0; j < GN - 1; j++)
+        for (i = 0; i < GN; i++)
+            add_edge(i, j, i, j + 1, COL_GRID);
+    qsort(edges, (size_t)nedge, sizeof(Edge), cmp_edge);
+    for (i = 0; i < nedge; i++)
+        line(edges[i].x0, edges[i].y0, edges[i].x1, edges[i].y1, edges[i].col);
     draw_gui(status);
 }
 
@@ -489,13 +548,17 @@ int main(void)
                 read(0, seq, 2);
             if (seq[0] == '[') {
                 if (seq[1] == 'A')
-                    pitch -= 0.12;
+                    pitch -= 0.10;
                 if (seq[1] == 'B')
-                    pitch += 0.12;
+                    pitch += 0.10;
                 if (seq[1] == 'C')
-                    yaw += 0.12;
+                    yaw += 0.10;
                 if (seq[1] == 'D')
-                    yaw -= 0.12;
+                    yaw -= 0.10;
+                if (pitch > 1.15)
+                    pitch = 1.15;
+                if (pitch < -0.15)
+                    pitch = -0.15;
                 snprintf(status, sizeof status, "rotate");
                 render(status);
             } else
