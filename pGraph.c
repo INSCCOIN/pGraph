@@ -436,13 +436,25 @@ static int eval_xy(const char *s, double x, double y, double *out)
 }
 
 /* ---- plot ---- */
-#define GN 20
+#define MAXGN 32
+static int gn = 20;
+static double extent = 3.0;
 static char formula[96] = "sin(sqrt(x*x+y*y))";
 static double yaw = 0.85, pitch = 0.55, zoom = 78;
-static double zbuf[GN][GN];
-static int zok[GN][GN];
+static double zbuf[MAXGN][MAXGN];
+static int zok[MAXGN][MAXGN];
 static double xmin = -3.0, xmax = 3.0, ymin = -3.0, ymax = 3.0;
 static double zmid, zspan = 1;
+
+static void apply_extent(void)
+{
+    if (extent < 1.0)
+        extent = 1.0;
+    if (extent > 12.0)
+        extent = 12.0;
+    xmin = ymin = -extent;
+    xmax = ymax = extent;
+}
 
 typedef struct {
     int x0, y0, x1, y1;
@@ -450,7 +462,7 @@ typedef struct {
     uint16_t col;
 } Edge;
 
-static Edge edges[GN * GN * 2];
+static Edge edges[MAXGN * MAXGN * 2];
 static int nedge;
 
 static uint16_t COL_BG, COL_GRID, COL_LINE, COL_AXIS, COL_TXT, COL_DIM, COL_HI;
@@ -490,10 +502,10 @@ static void rebuild(void)
 {
     int i, j, n = 0;
     double zmin = 0, zmax = 0;
-    for (j = 0; j < GN; j++) {
-        for (i = 0; i < GN; i++) {
-            double x = xmin + (xmax - xmin) * i / (GN - 1);
-            double y = ymin + (ymax - ymin) * j / (GN - 1);
+    for (j = 0; j < gn; j++) {
+        for (i = 0; i < gn; i++) {
+            double x = xmin + (xmax - xmin) * i / (gn - 1);
+            double y = ymin + (ymax - ymin) * j / (gn - 1);
             double z;
             if (eval_xy(formula, x, y, &z) || !isfinite(z) || fabs(z) > 1e6) {
                 zok[j][i] = 0;
@@ -533,10 +545,10 @@ static void add_edge(int i0, int j0, int i1, int j1, uint16_t col)
         return;
     if (fabs(zbuf[j0][i0] - zbuf[j1][i1]) > zspan * 1.6)
         return;
-    x0 = xmin + (xmax - xmin) * i0 / (GN - 1);
-    y0 = ymin + (ymax - ymin) * j0 / (GN - 1);
-    x1 = xmin + (xmax - xmin) * i1 / (GN - 1);
-    y1 = ymin + (ymax - ymin) * j1 / (GN - 1);
+    x0 = xmin + (xmax - xmin) * i0 / (gn - 1);
+    y0 = ymin + (ymax - ymin) * j0 / (gn - 1);
+    x1 = xmin + (xmax - xmin) * i1 / (gn - 1);
+    y1 = ymin + (ymax - ymin) * j1 / (gn - 1);
     if (!project(x0, y0, zbuf[j0][i0], &sx0, &sy0, &d0))
         return;
     if (!project(x1, y1, zbuf[j1][i1], &sx1, &sy1, &d1))
@@ -565,7 +577,7 @@ typedef struct {
     uint16_t col;
 } Face;
 
-static Face faces[GN * GN];
+static Face faces[MAXGN * MAXGN];
 static int nface;
 
 static int cmp_face(const void *a, const void *b)
@@ -591,8 +603,8 @@ static void add_face(int i, int j)
     for (k = 0; k < 4; k++) {
         int ii = i + (k == 1 || k == 2);
         int jj = j + (k >= 2);
-        double x = xmin + (xmax - xmin) * ii / (GN - 1);
-        double y = ymin + (ymax - ymin) * jj / (GN - 1);
+        double x = xmin + (xmax - xmin) * ii / (gn - 1);
+        double y = ymin + (ymax - ymin) * jj / (gn - 1);
         double dep;
         if (!project(x, y, zbuf[jj][ii], &p[k][0], &p[k][1], &dep))
             return;
@@ -617,7 +629,7 @@ static void draw_gui(const char *status)
     char bar[128];
     fill_rect(0, 0, (int)W, 12, COL_DIM);
     text(2, 3, "pGraph", COL_HI);
-    snprintf(bar, sizeof bar, " %s y%.0f", MODE_NAME[mode], yaw * 180 / M_PI);
+    snprintf(bar, sizeof bar, " %s n%d r%.0f", MODE_NAME[mode], gn, extent);
     text((int)W - 6 * (int)strlen(bar) - 2, 3, bar, COL_TXT);
 
     fill_rect(0, (int)H - 22, (int)W, 22, COL_DIM);
@@ -626,26 +638,101 @@ static void draw_gui(const char *status)
     text(2, (int)H - 10, status, COL_TXT);
 }
 
-static void axis(double ax0, double ay0, double az0, double ax1, double ay1, double az1)
+static void edge3(double x0, double y0, double z0, double x1, double y1, double z1, uint16_t c)
 {
-    int x0, y0, x1, y1;
-    if (project(ax0, ay0, az0 * zspan + zmid, &x0, &y0, NULL) &&
-        project(ax1, ay1, az1 * zspan + zmid, &x1, &y1, NULL))
-        line(x0, y0, x1, y1, COL_AXIS);
+    int a, b, d, e;
+    if (project(x0, y0, z0, &a, &b, NULL) && project(x1, y1, z1, &d, &e, NULL))
+        line(a, b, d, e, c);
+}
+
+static void clip_box(void)
+{
+    double zlo = zmid - zspan, zhi = zmid + zspan;
+    double xs[2] = {xmin, xmax};
+    double ys[2] = {ymin, ymax};
+    double zs[2] = {zlo, zhi};
+    int a, b;
+    for (a = 0; a < 2; a++)
+        for (b = 0; b < 2; b++) {
+            edge3(xs[0], ys[a], zs[b], xs[1], ys[a], zs[b], COL_AXIS);
+            edge3(xs[a], ys[0], zs[b], xs[a], ys[1], zs[b], COL_AXIS);
+            edge3(xs[a], ys[b], zs[0], xs[a], ys[b], zs[1], COL_AXIS);
+        }
+}
+
+static void settings_menu(void)
+{
+    int sel = 0, done = 0;
+    while (!done) {
+        char line[80];
+        int k;
+        fill_rect(20, 28, (int)W - 40, 70, COL_DIM);
+        text(28, 34, "F2 settings", COL_HI);
+        snprintf(line, sizeof line, "%s domain  %.1f", sel == 0 ? ">" : " ", extent);
+        text(28, 48, line, sel == 0 ? COL_HI : COL_TXT);
+        snprintf(line, sizeof line, "%s mesh    %d", sel == 1 ? ">" : " ", gn);
+        text(28, 58, line, sel == 1 ? COL_HI : COL_TXT);
+        text(28, 72, "left/right change  enter back", COL_TXT);
+        k = 0;
+        {
+            fd_set rf;
+            struct timeval tv = {0, 50000};
+            unsigned char ch = 0;
+            FD_ZERO(&rf);
+            FD_SET(0, &rf);
+            if (select(1, &rf, NULL, NULL, &tv) > 0)
+                if (read(0, &ch, 1) == 1)
+                    k = ch;
+        }
+        if (!k)
+            continue;
+        if (k == 0x1b) {
+            unsigned char seq[6] = {0};
+            fd_set rf;
+            struct timeval tv = {0, 80000};
+            FD_ZERO(&rf);
+            FD_SET(0, &rf);
+            if (select(1, &rf, NULL, NULL, &tv) > 0)
+                read(0, seq, 5);
+            if (seq[0] == '[' && seq[1] == 'A')
+                sel = 0;
+            else if (seq[0] == '[' && seq[1] == 'B')
+                sel = 1;
+            else if (seq[0] == '[' && seq[1] == 'C') {
+                if (sel == 0)
+                    extent += 0.5;
+                else if (gn < MAXGN)
+                    gn += 2;
+            } else if (seq[0] == '[' && seq[1] == 'D') {
+                if (sel == 0)
+                    extent -= 0.5;
+                else if (gn > 8)
+                    gn -= 2;
+            } else
+                done = 1;
+        } else if (k == 10 || k == 13 || k == 'q')
+            done = 1;
+        apply_extent();
+        if (gn < 8)
+            gn = 8;
+        if (gn > MAXGN)
+            gn = MAXGN;
+        if (gn % 2)
+            gn++;
+    }
+    rebuild();
 }
 
 static void render(const char *status)
 {
     int i, j;
     clear(COL_BG);
-    axis(-3.2, 0, 0, 3.2, 0, 0);
-    axis(0, -3.2, 0, 0, 3.2, 0);
-    axis(0, 0, -1.1, 0, 0, 1.1);
+    clip_box();
 
     if (mode == MODE_SOLID) {
         nface = 0;
-        for (j = 0; j < GN - 1; j++)
-            for (i = 0; i < GN - 1; i++)
+        for (j = 0; j < gn - 1; j++)
+            for (i = 0; i < gn - 1; i++)
                 add_face(i, j);
         qsort(faces, (size_t)nface, sizeof(Face), cmp_face);
         for (i = 0; i < nface; i++) {
@@ -655,12 +742,12 @@ static void render(const char *status)
                 faces[i].x[3], faces[i].y[3], faces[i].col);
         }
     } else if (mode == MODE_DOTS) {
-        for (j = 0; j < GN; j++)
-            for (i = 0; i < GN; i++) {
+        for (j = 0; j < gn; j++)
+            for (i = 0; i < gn; i++) {
                 int sx, sy;
                 double dep, zn;
-                double x = xmin + (xmax - xmin) * i / (GN - 1);
-                double y = ymin + (ymax - ymin) * j / (GN - 1);
+                double x = xmin + (xmax - xmin) * i / (gn - 1);
+                double y = ymin + (ymax - ymin) * j / (gn - 1);
                 if (!zok[j][i])
                     continue;
                 if (!project(x, y, zbuf[j][i], &sx, &sy, &dep))
@@ -672,11 +759,11 @@ static void render(const char *status)
             }
     } else {
         nedge = 0;
-        for (j = 0; j < GN; j++)
-            for (i = 0; i < GN - 1; i++)
+        for (j = 0; j < gn; j++)
+            for (i = 0; i < gn - 1; i++)
                 add_edge(i, j, i + 1, j, COL_LINE);
-        for (j = 0; j < GN - 1; j++)
-            for (i = 0; i < GN; i++)
+        for (j = 0; j < gn - 1; j++)
+            for (i = 0; i < gn; i++)
                 add_edge(i, j, i, j + 1, COL_GRID);
         qsort(edges, (size_t)nedge, sizeof(Edge), cmp_edge);
         for (i = 0; i < nedge; i++)
@@ -752,6 +839,7 @@ int main(void)
     COL_HI = rgb565(0, 255, 80);
 
     raw_term(1);
+    apply_extent();
     rebuild();
     render(status);
 
@@ -767,13 +855,20 @@ int main(void)
         if (!ch)
             continue;
         if (ch == 0x1b) {
-            unsigned char seq[2] = {0, 0};
+            unsigned char seq[8] = {0};
             struct timeval t2 = {0, 80000};
             FD_ZERO(&rf);
             FD_SET(0, &rf);
             if (select(1, &rf, NULL, NULL, &t2) > 0)
-                read(0, seq, 2);
-            if (seq[0] == '[') {
+                read(0, seq, 6);
+            /* F2: ESC O Q  or ESC [ 1 2 ~ */
+            if ((seq[0] == 'O' && seq[1] == 'Q') ||
+                (seq[0] == '[' && seq[1] == '1' && seq[2] == '2') ||
+                (seq[0] == '[' && seq[1] == '[' && seq[2] == 'B')) {
+                settings_menu();
+                snprintf(status, sizeof status, "mesh %d  domain %.1f", gn, extent);
+                render(status);
+            } else if (seq[0] == '[') {
                 if (seq[1] == 'A')
                     pitch -= 0.10;
                 if (seq[1] == 'B')
@@ -792,7 +887,19 @@ int main(void)
                 running = 0;
             continue;
         }
-        if (!editing && (ch == 'm' || ch == 'M')) {
+        if (!editing && (ch == '[' || ch == ']')) {
+            if (ch == ']' && gn < MAXGN)
+                gn += 2;
+            if (ch == '[' && gn > 8)
+                gn -= 2;
+            if (gn > MAXGN)
+                gn = MAXGN;
+            if (gn < 8)
+                gn = 8;
+            rebuild();
+            snprintf(status, sizeof status, "mesh %d", gn);
+            render(status);
+        } else if (!editing && (ch == 'm' || ch == 'M')) {
             mode = (mode + 1) % MODE_N;
             snprintf(status, sizeof status, "mode %s", MODE_NAME[mode]);
             render(status);
