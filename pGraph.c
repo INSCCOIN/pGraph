@@ -84,6 +84,87 @@ static void fill_rect(int x, int y, int w, int h, uint16_t c)
             px(x + i, y + j, c);
 }
 
+enum { MODE_WIRE, MODE_COLOR, MODE_SOLID, MODE_DOTS, MODE_N };
+
+static int mode = MODE_COLOR;
+static const char *MODE_NAME[] = {"wire", "color", "solid", "dots"};
+
+static uint16_t heat(double zn)
+{
+    int r, g, b;
+    if (zn < -1)
+        zn = -1;
+    if (zn > 1)
+        zn = 1;
+    if (zn < 0) {
+        double t = zn + 1;
+        r = (int)(20 * t);
+        g = (int)(40 + 140 * t);
+        b = (int)(180 - 80 * t);
+    } else {
+        double t = zn;
+        r = (int)(40 + 200 * t);
+        g = (int)(200 - 80 * t);
+        b = (int)(40 - 30 * t);
+    }
+    if (r < 0)
+        r = 0;
+    if (g < 0)
+        g = 0;
+    if (b < 0)
+        b = 0;
+    if (r > 255)
+        r = 255;
+    if (g > 255)
+        g = 255;
+    if (b > 255)
+        b = 255;
+    return rgb565(r, g, b);
+}
+
+static void hline(int x0, int x1, int y, uint16_t c)
+{
+    if (x0 > x1) {
+        int t = x0;
+        x0 = x1;
+        x1 = t;
+    }
+    for (; x0 <= x1; x0++)
+        px(x0, y, c);
+}
+
+static void tri(int x0, int y0, int x1, int y1, int x2, int y2, uint16_t c)
+{
+    int i;
+    int xs[3] = {x0, x1, x2};
+    int ys[3] = {y0, y1, y2};
+    for (i = 0; i < 2; i++) {
+        int j;
+        for (j = i + 1; j < 3; j++)
+            if (ys[j] < ys[i]) {
+                int t = ys[i];
+                ys[i] = ys[j];
+                ys[j] = t;
+                t = xs[i];
+                xs[i] = xs[j];
+                xs[j] = t;
+            }
+    }
+    if (ys[2] == ys[0])
+        return;
+    for (i = ys[0]; i <= ys[2]; i++) {
+        int xa, xb;
+        if (i <= ys[1] && ys[1] != ys[0])
+            xa = xs[0] + (xs[1] - xs[0]) * (i - ys[0]) / (ys[1] - ys[0]);
+        else if (ys[2] != ys[1])
+            xa = xs[1] + (xs[2] - xs[1]) * (i - ys[1]) / (ys[2] - ys[1]);
+        else
+            xa = xs[1];
+        xb = xs[0] + (xs[2] - xs[0]) * (i - ys[0]) / (ys[2] - ys[0]);
+        hline(xa, xb, i, c);
+    }
+}
+
 /* tiny 5x7 font */
 static const unsigned char FONT[96][5] = {
     {0,0,0,0,0}, {0,0,0x5f,0,0}, {0,7,0,7,0}, {0x14,0x7f,0x14,0x7f,0x14},
@@ -167,11 +248,33 @@ static double parse_num(Expr *e)
     return v;
 }
 
+static int parse_args(Expr *e, double *a, double *b)
+{
+    int n = 1;
+    skip(e);
+    if (*e->p != '(') {
+        e->err = 1;
+        return 0;
+    }
+    e->p++;
+    *a = parse_expr(e);
+    skip(e);
+    if (*e->p == ',') {
+        e->p++;
+        *b = parse_expr(e);
+        n = 2;
+        skip(e);
+    }
+    if (*e->p == ')')
+        e->p++;
+    return n;
+}
+
 static double parse_ident(Expr *e)
 {
     char id[16];
-    int n = 0;
-    double a;
+    int n = 0, ac;
+    double a = 0, b = 0;
     while (isalpha((unsigned char)*e->p) && n < 15)
         id[n++] = (char)tolower((unsigned char)*e->p++);
     id[n] = 0;
@@ -184,27 +287,57 @@ static double parse_ident(Expr *e)
         return M_PI;
     if (!strcmp(id, "e"))
         return 2.718281828459045;
-    if (*e->p != '(') {
-        e->err = 1;
+    ac = parse_args(e, &a, &b);
+    if (e->err)
         return 0;
-    }
-    e->p++;
-    a = parse_expr(e);
-    skip(e);
-    if (*e->p == ')')
-        e->p++;
     if (!strcmp(id, "sin"))
         return sin(a);
     if (!strcmp(id, "cos"))
         return cos(a);
     if (!strcmp(id, "tan"))
         return tan(a);
+    if (!strcmp(id, "asin"))
+        return fabs(a) > 1 ? NAN : asin(a);
+    if (!strcmp(id, "acos"))
+        return fabs(a) > 1 ? NAN : acos(a);
+    if (!strcmp(id, "atan"))
+        return atan(a);
+    if (!strcmp(id, "atan2"))
+        return ac == 2 ? atan2(a, b) : NAN;
+    if (!strcmp(id, "sinh"))
+        return sinh(a);
+    if (!strcmp(id, "cosh"))
+        return cosh(a);
+    if (!strcmp(id, "tanh"))
+        return tanh(a);
     if (!strcmp(id, "sqrt"))
         return a < 0 ? NAN : sqrt(a);
     if (!strcmp(id, "abs"))
         return fabs(a);
+    if (!strcmp(id, "exp"))
+        return exp(a);
     if (!strcmp(id, "ln") || !strcmp(id, "log"))
         return a <= 0 ? NAN : log(a);
+    if (!strcmp(id, "log10"))
+        return a <= 0 ? NAN : log10(a);
+    if (!strcmp(id, "floor"))
+        return floor(a);
+    if (!strcmp(id, "ceil"))
+        return ceil(a);
+    if (!strcmp(id, "round"))
+        return round(a);
+    if (!strcmp(id, "sign"))
+        return a > 0 ? 1 : a < 0 ? -1 : 0;
+    if (!strcmp(id, "pow"))
+        return ac == 2 ? pow(a, b) : NAN;
+    if (!strcmp(id, "min"))
+        return ac == 2 ? fmin(a, b) : a;
+    if (!strcmp(id, "max"))
+        return ac == 2 ? fmax(a, b) : a;
+    if (!strcmp(id, "hypot"))
+        return ac == 2 ? hypot(a, b) : fabs(a);
+    if (!strcmp(id, "mod"))
+        return ac == 2 && b != 0 ? fmod(a, b) : NAN;
     e->err = 1;
     return 0;
 }
@@ -253,6 +386,11 @@ static double parse_term(Expr *e)
         if (*e->p == '*') {
             e->p++;
             v *= parse_pow(e);
+        } else if (*e->p == '%') {
+            double d;
+            e->p++;
+            d = parse_pow(e);
+            v = d == 0 ? NAN : fmod(v, d);
         } else if (*e->p == '/') {
             double d;
             e->p++;
@@ -412,8 +550,66 @@ static void add_edge(int i0, int j0, int i1, int j1, uint16_t col)
     edges[nedge].x1 = sx1;
     edges[nedge].y1 = sy1;
     edges[nedge].depth = (d0 + d1) * 0.5;
-    edges[nedge].col = col;
+    if (mode == MODE_WIRE)
+        edges[nedge].col = col;
+    else {
+        double zn = ((zbuf[j0][i0] + zbuf[j1][i1]) * 0.5 - zmid) / zspan;
+        edges[nedge].col = heat(zn);
+    }
     nedge++;
+}
+
+typedef struct {
+    int x[4], y[4];
+    double depth;
+    uint16_t col;
+} Face;
+
+static Face faces[GN * GN];
+static int nface;
+
+static int cmp_face(const void *a, const void *b)
+{
+    const Face *x = a, *y = b;
+    if (x->depth < y->depth)
+        return -1;
+    if (x->depth > y->depth)
+        return 1;
+    return 0;
+}
+
+static void add_face(int i, int j)
+{
+    int k, p[4][2];
+    double dsum = 0, zn;
+    if (!zok[j][i] || !zok[j][i + 1] || !zok[j + 1][i] || !zok[j + 1][i + 1])
+        return;
+    if (fabs(zbuf[j][i] - zbuf[j][i + 1]) > zspan * 1.4)
+        return;
+    if (fabs(zbuf[j][i] - zbuf[j + 1][i]) > zspan * 1.4)
+        return;
+    for (k = 0; k < 4; k++) {
+        int ii = i + (k == 1 || k == 2);
+        int jj = j + (k >= 2);
+        double x = xmin + (xmax - xmin) * ii / (GN - 1);
+        double y = ymin + (ymax - ymin) * jj / (GN - 1);
+        double dep;
+        if (!project(x, y, zbuf[jj][ii], &p[k][0], &p[k][1], &dep))
+            return;
+        dsum += dep;
+    }
+    zn = (zbuf[j][i] + zbuf[j][i + 1] + zbuf[j + 1][i] + zbuf[j + 1][i + 1]) * 0.25;
+    faces[nface].x[0] = p[0][0];
+    faces[nface].y[0] = p[0][1];
+    faces[nface].x[1] = p[1][0];
+    faces[nface].y[1] = p[1][1];
+    faces[nface].x[2] = p[2][0];
+    faces[nface].y[2] = p[2][1];
+    faces[nface].x[3] = p[3][0];
+    faces[nface].y[3] = p[3][1];
+    faces[nface].depth = dsum * 0.25;
+    faces[nface].col = heat((zn - zmid) / zspan);
+    nface++;
 }
 
 static void draw_gui(const char *status)
@@ -421,7 +617,7 @@ static void draw_gui(const char *status)
     char bar[128];
     fill_rect(0, 0, (int)W, 12, COL_DIM);
     text(2, 3, "pGraph", COL_HI);
-    snprintf(bar, sizeof bar, " y%.0f p%.0f", yaw * 180 / M_PI, pitch * 180 / M_PI);
+    snprintf(bar, sizeof bar, " %s y%.0f", MODE_NAME[mode], yaw * 180 / M_PI);
     text((int)W - 6 * (int)strlen(bar) - 2, 3, bar, COL_TXT);
 
     fill_rect(0, (int)H - 22, (int)W, 22, COL_DIM);
@@ -446,16 +642,46 @@ static void render(const char *status)
     axis(0, -3.2, 0, 0, 3.2, 0);
     axis(0, 0, -1.1, 0, 0, 1.1);
 
-    nedge = 0;
-    for (j = 0; j < GN; j++)
-        for (i = 0; i < GN - 1; i++)
-            add_edge(i, j, i + 1, j, COL_LINE);
-    for (j = 0; j < GN - 1; j++)
-        for (i = 0; i < GN; i++)
-            add_edge(i, j, i, j + 1, COL_GRID);
-    qsort(edges, (size_t)nedge, sizeof(Edge), cmp_edge);
-    for (i = 0; i < nedge; i++)
-        line(edges[i].x0, edges[i].y0, edges[i].x1, edges[i].y1, edges[i].col);
+    if (mode == MODE_SOLID) {
+        nface = 0;
+        for (j = 0; j < GN - 1; j++)
+            for (i = 0; i < GN - 1; i++)
+                add_face(i, j);
+        qsort(faces, (size_t)nface, sizeof(Face), cmp_face);
+        for (i = 0; i < nface; i++) {
+            tri(faces[i].x[0], faces[i].y[0], faces[i].x[1], faces[i].y[1],
+                faces[i].x[2], faces[i].y[2], faces[i].col);
+            tri(faces[i].x[0], faces[i].y[0], faces[i].x[2], faces[i].y[2],
+                faces[i].x[3], faces[i].y[3], faces[i].col);
+        }
+    } else if (mode == MODE_DOTS) {
+        for (j = 0; j < GN; j++)
+            for (i = 0; i < GN; i++) {
+                int sx, sy;
+                double dep, zn;
+                double x = xmin + (xmax - xmin) * i / (GN - 1);
+                double y = ymin + (ymax - ymin) * j / (GN - 1);
+                if (!zok[j][i])
+                    continue;
+                if (!project(x, y, zbuf[j][i], &sx, &sy, &dep))
+                    continue;
+                zn = (zbuf[j][i] - zmid) / zspan;
+                px(sx, sy, heat(zn));
+                px(sx + 1, sy, heat(zn));
+                px(sx, sy + 1, heat(zn));
+            }
+    } else {
+        nedge = 0;
+        for (j = 0; j < GN; j++)
+            for (i = 0; i < GN - 1; i++)
+                add_edge(i, j, i + 1, j, COL_LINE);
+        for (j = 0; j < GN - 1; j++)
+            for (i = 0; i < GN; i++)
+                add_edge(i, j, i, j + 1, COL_GRID);
+        qsort(edges, (size_t)nedge, sizeof(Edge), cmp_edge);
+        for (i = 0; i < nedge; i++)
+            line(edges[i].x0, edges[i].y0, edges[i].x1, edges[i].y1, edges[i].col);
+    }
     draw_gui(status);
 }
 
@@ -507,7 +733,7 @@ static const char *PRE[] = {
 
 int main(void)
 {
-    char status[80] = "arrows rotate  type formula  enter plot";
+    char status[80] = "m mode  arrows  type  enter plot";
     int pre = 0;
     int editing = 0;
     int running = 1;
@@ -566,7 +792,11 @@ int main(void)
                 running = 0;
             continue;
         }
-        if (ch == 'q' || ch == 'Q') {
+        if (!editing && (ch == 'm' || ch == 'M')) {
+            mode = (mode + 1) % MODE_N;
+            snprintf(status, sizeof status, "mode %s", MODE_NAME[mode]);
+            render(status);
+        } else if (ch == 'q' || ch == 'Q') {
             if (editing) {
                 size_t n = strlen(formula);
                 if (n + 1 < sizeof formula) {
