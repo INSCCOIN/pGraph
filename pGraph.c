@@ -507,8 +507,9 @@ static const char *PRE[] = {
 
 int main(void)
 {
-    char status[80] = "arrows rotate  +- zoom  1-6 presets  type formula";
+    char status[80] = "arrows rotate  type formula  enter plot";
     int pre = 0;
+    int editing = 0;
     int running = 1;
 
     if (fb_open() < 0) {
@@ -565,23 +566,32 @@ int main(void)
                 running = 0;
             continue;
         }
-        if (ch == 'q' || ch == 'Q')
-            running = 0;
-        else if (ch == '+' || ch == '=') {
+        if (ch == 'q' || ch == 'Q') {
+            if (editing) {
+                size_t n = strlen(formula);
+                if (n + 1 < sizeof formula) {
+                    formula[n] = (char)ch;
+                    formula[n + 1] = 0;
+                }
+                snprintf(status, sizeof status, "edit  enter to plot");
+                render(status);
+            } else
+                running = 0;
+        } else if (!editing && (ch == '+' || ch == '=')) {
             zoom *= 1.12;
             snprintf(status, sizeof status, "zoom in");
             render(status);
-        } else if (ch == '-' || ch == '_') {
+        } else if (!editing && (ch == '-' || ch == '_')) {
             zoom /= 1.12;
             snprintf(status, sizeof status, "zoom out");
             render(status);
-        } else if (ch == '0') {
+        } else if (!editing && ch == '0') {
             yaw = 0.7;
             pitch = 0.45;
             zoom = 70;
             snprintf(status, sizeof status, "reset view");
             render(status);
-        } else if (ch >= '1' && ch <= '6') {
+        } else if (!editing && ch >= '1' && ch <= '6') {
             pre = ch - '1';
             snprintf(formula, sizeof formula, "%s", PRE[pre]);
             rebuild();
@@ -591,10 +601,12 @@ int main(void)
             size_t n = strlen(formula);
             if (n)
                 formula[n - 1] = 0;
+            editing = 1;
             snprintf(status, sizeof status, "edit");
             render(status);
         } else if (ch == 10 || ch == 13) {
             double dummy;
+            editing = 0;
             if (eval_xy(formula, 0.1, 0.1, &dummy) && eval_xy(formula, 1, 1, &dummy))
                 snprintf(status, sizeof status, "bad formula");
             else {
@@ -608,6 +620,7 @@ int main(void)
                 formula[n] = (char)ch;
                 formula[n + 1] = 0;
             }
+            editing = 1;
             snprintf(status, sizeof status, "edit  enter to plot");
             render(status);
         }
