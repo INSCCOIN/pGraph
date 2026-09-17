@@ -436,7 +436,7 @@ static int eval_xy(const char *s, double x, double y, double *out)
 }
 
 /* ---- plot ---- */
-#define MAXGN 32
+#define MAXGN 128
 static int gn = 20;
 static double extent = 3.0;
 static char formula[96] = "sin(sqrt(x*x+y*y))";
@@ -702,12 +702,12 @@ static void settings_menu(void)
                 if (sel == 0)
                     extent += 0.5;
                 else if (gn < MAXGN)
-                    gn += 2;
+                    gn += 4;
             } else if (seq[0] == '[' && seq[1] == 'D') {
                 if (sel == 0)
                     extent -= 0.5;
                 else if (gn > 8)
-                    gn -= 2;
+                    gn -= 4;
             } else
                 done = 1;
         } else if (k == 10 || k == 13 || k == 'q')
@@ -889,9 +889,9 @@ int main(void)
         }
         if (!editing && (ch == '[' || ch == ']')) {
             if (ch == ']' && gn < MAXGN)
-                gn += 2;
+                gn += 4;
             if (ch == '[' && gn > 8)
-                gn -= 2;
+                gn -= 4;
             if (gn > MAXGN)
                 gn = MAXGN;
             if (gn < 8)
